@@ -154,6 +154,12 @@ class ResourceSuite extends BaseScalaCheckSuite with DisciplineSuite {
     forAll { (fa: IO[String]) => assertEqv(Resource.eval(fa).use(IO.pure), fa) }
   }
 
+  real("eval - uncancelable timeout is not canceled") {
+    val test = Resource.eval(IO.uncancelable(_ => IO.sleep(100.millis))).timeout(10.millis).use_
+    test
+
+  }
+
   ticked("eval - interruption") { implicit ticker =>
     def resource(d: Deferred[IO, Int]): Resource[IO, Unit] =
       for {

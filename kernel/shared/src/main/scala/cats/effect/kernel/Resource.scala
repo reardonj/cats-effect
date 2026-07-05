@@ -161,38 +161,43 @@ sealed abstract class Resource[F[_], +A] extends Serializable {
     case object Nil extends Stack[A]
     final case class Frame[AA, BB](head: AA => Resource[F, BB], tail: Stack[BB])
         extends Stack[AA]
+    F.uncancelable { poll =>
+      // Indirection for calling `loop` needed because `loop` must be @tailrec
+      def continue[C](current: Resource[F, C], stack: Stack[C]): F[B] =
+        loop(current, stack)
 
-    // Indirection for calling `loop` needed because `loop` must be @tailrec
-    def continue[C](current: Resource[F, C], stack: Stack[C]): F[B] =
-      loop(current, stack)
-
-    // Interpreter that knows how to evaluate a Resource data structure;
-    // Maintains its own stack for dealing with Bind chains
-    @tailrec def loop[C](current: Resource[F, C], stack: Stack[C]): F[B] =
-      current match {
-        case Allocate(resource) =>
-          F.bracketFull(resource) {
-            case (a, _) =>
-              stack match {
-                case Nil => onOutput(a)
-                case Frame(head, tail) => continue(head(a), tail)
+      // Interpreter that knows how to evaluate a Resource data structure;
+      // Maintains its own stack for dealing with Bind chains
+      @tailrec def loop[C](current: Resource[F, C], stack: Stack[C]): F[B] =
+        current match {
+          case Allocate(resource) =>
+            poll {
+              F.bracketFull(resource) {
+                case (a, _) =>
+                  stack match {
+                    case Nil => onOutput(a)
+                    case Frame(head, tail) => continue(head(a), tail)
+                  }
+              } {
+                case ((_, release), outcome) =>
+                  onRelease(release, ExitCase.fromOutcome(outcome))
               }
-          } {
-            case ((_, release), outcome) =>
-              onRelease(release, ExitCase.fromOutcome(outcome))
-          }
-        case Bind(source, fs) =>
-          loop(source, Frame(fs, stack))
-        case Pure(v) =>
-          stack match {
-            case Nil => onOutput(v)
-            case Frame(head, tail) =>
-              loop(head(v), tail)
-          }
-        case Eval(fa) =>
-          fa.flatMap(a => continue(Resource.pure(a), stack))
-      }
-    loop(this, Nil)
+            }
+          case Bind(source, fs) =>
+            loop(source, Frame(fs, stack))
+          case Pure(v) =>
+            stack match {
+              case Nil => onOutput(v)
+              case Frame(head, tail) =>
+                loop(head(v), tail)
+            }
+          case Eval(fa) =>
+            poll(fa).flatMap(a => continue(Resource.pure(a), stack))
+        }
+
+      loop(this, Nil)
+
+    }
   }
 
   /**
@@ -467,23 +472,22 @@ sealed abstract class Resource[F[_], +A] extends Serializable {
     case object Nil extends Stack[B]
     final case class Frame[AA, BB](head: AA => Resource[F, BB], tail: Stack[BB])
         extends Stack[AA]
+    F uncancelable { poll =>
+      // Indirection for calling `loop` needed because `loop` must be @tailrec
+      def continue[C](
+          current: Resource[F, C],
+          stack: Stack[C],
+          release: ExitCase => F[Unit]): F[(B, ExitCase => F[Unit])] =
+        loop(current, stack, release)
 
-    // Indirection for calling `loop` needed because `loop` must be @tailrec
-    def continue[C](
-        current: Resource[F, C],
-        stack: Stack[C],
-        release: ExitCase => F[Unit]): F[(B, ExitCase => F[Unit])] =
-      loop(current, stack, release)
-
-    // Interpreter that knows how to evaluate a Resource data structure;
-    // Maintains its own stack for dealing with Bind chains
-    @tailrec def loop[C](
-        current: Resource[F, C],
-        stack: Stack[C],
-        release: ExitCase => F[Unit]): F[(B, ExitCase => F[Unit])] =
-      current match {
-        case Allocate(resource) =>
-          F uncancelable { poll =>
+      // Interpreter that knows how to evaluate a Resource data structure;
+      // Maintains its own stack for dealing with Bind chains
+      @tailrec def loop[C](
+          current: Resource[F, C],
+          stack: Stack[C],
+          release: ExitCase => F[Unit]): F[(B, ExitCase => F[Unit])] =
+        current match {
+          case Allocate(resource) =>
             resource(poll) flatMap {
               case (b, rel) =>
                 // Insert F.unit to emulate defer for stack-safety
@@ -510,24 +514,24 @@ sealed abstract class Resource[F[_], +A] extends Serializable {
                       .onError { case e => rel(ExitCase.Errored(e)).handleError(_ => ()) }
                 }
             }
-          }
 
-        case Bind(source, fs) =>
-          loop(source, Frame(fs, stack), release)
+          case Bind(source, fs) =>
+            loop(source, Frame(fs, stack), release)
 
-        case Pure(v) =>
-          stack match {
-            case Nil =>
-              (v: B, release).pure[F]
-            case Frame(head, tail) =>
-              loop(head(v), tail, release)
-          }
+          case Pure(v) =>
+            stack match {
+              case Nil =>
+                (v: B, release).pure[F]
+              case Frame(head, tail) =>
+                loop(head(v), tail, release)
+            }
 
-        case Eval(fa) =>
-          fa.flatMap(a => continue(Resource.pure(a), stack, release))
-      }
+          case Eval(fa) =>
+            poll(fa).flatMap(a => continue(Resource.pure(a), stack, release))
+        }
 
-    loop(this, Nil, _ => F.unit)
+      loop(this, Nil, _ => F.unit)
+    }
   }
 
   /**
