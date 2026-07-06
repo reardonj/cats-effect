@@ -39,6 +39,8 @@ import munit.DisciplineSuite
 
 class ResourceSuite extends BaseScalaCheckSuite with DisciplineSuite {
 
+  override def scalaCheckInitialSeed = "EpTk-jCEjNXrCuelFnCg7QRFmJK5gqhF6DEW9EUaFtF="
+
   private implicit def resourceShow[A]: Show[Resource[IO, A]] = Show.fromToString
 
   tickedProperty("releases resources in reverse order of acquisition") { implicit ticker =>
@@ -155,9 +157,23 @@ class ResourceSuite extends BaseScalaCheckSuite with DisciplineSuite {
   }
 
   real("eval - uncancelable timeout is not canceled") {
-    val test = Resource.eval(IO.uncancelable(_ => IO.sleep(100.millis))).timeout(10.millis).use_
-    test
+    Resource.eval(IO.uncancelable(_ => IO.sleep(100.millis))).timeout(10.millis).use_
+  }
 
+  real("eval - uncancelable continuation") {
+    val res = Resource
+      .make(IO.pure(42))(_ => IO.unit)
+      .flatMap(_ => Resource.eval(IO.uncancelable { _ => IO.canceled }))
+
+    for {
+      ctr <- IO.ref(0)
+      fib <- IO.uncancelable { poll =>
+        poll(res.allocatedCase).flatMap { _ => ctr.update(_ + 1) }
+      }.start
+      _ <- fib.join
+      c <- ctr.get
+      _ <- IO { assertEquals(c, 1) }
+    } yield ()
   }
 
   ticked("eval - interruption") { implicit ticker =>

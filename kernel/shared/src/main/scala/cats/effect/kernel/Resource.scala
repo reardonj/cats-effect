@@ -171,23 +171,21 @@ sealed abstract class Resource[F[_], +A] extends Serializable {
       @tailrec def loop[C](current: Resource[F, C], stack: Stack[C]): F[B] =
         current match {
           case Allocate(resource) =>
-            poll {
-              F.bracketFull(resource) {
-                case (a, _) =>
-                  stack match {
-                    case Nil => onOutput(a)
-                    case Frame(head, tail) => continue(head(a), tail)
-                  }
-              } {
-                case ((_, release), outcome) =>
-                  onRelease(release, ExitCase.fromOutcome(outcome))
-              }
+            F.bracketFull(p => p(resource(poll))) {
+              case (a, _) =>
+                stack match {
+                  case Nil => poll(onOutput(a))
+                  case Frame(head, tail) => continue(head(a), tail)
+                }
+            } {
+              case ((_, release), outcome) =>
+                onRelease(release, ExitCase.fromOutcome(outcome))
             }
           case Bind(source, fs) =>
             loop(source, Frame(fs, stack))
           case Pure(v) =>
             stack match {
-              case Nil => onOutput(v)
+              case Nil => poll(onOutput(v))
               case Frame(head, tail) =>
                 loop(head(v), tail)
             }
@@ -509,7 +507,7 @@ sealed abstract class Resource[F[_], +A] extends Serializable {
                     F.pure((b, rel2))
 
                   case Frame(head, tail) =>
-                    poll(continue(head(b), tail, rel2))
+                    (poll(F.unit) >> continue(head(b), tail, rel2))
                       .onCancel(rel(ExitCase.Canceled))
                       .onError { case e => rel(ExitCase.Errored(e)).handleError(_ => ()) }
                 }
