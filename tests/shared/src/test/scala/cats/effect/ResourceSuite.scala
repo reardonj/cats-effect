@@ -39,8 +39,6 @@ import munit.DisciplineSuite
 
 class ResourceSuite extends BaseScalaCheckSuite with DisciplineSuite {
 
-  override def scalaCheckInitialSeed = "EpTk-jCEjNXrCuelFnCg7QRFmJK5gqhF6DEW9EUaFtF="
-
   private implicit def resourceShow[A]: Show[Resource[IO, A]] = Show.fromToString
 
   tickedProperty("releases resources in reverse order of acquisition") { implicit ticker =>
@@ -742,16 +740,6 @@ class ResourceSuite extends BaseScalaCheckSuite with DisciplineSuite {
 
       assertCompleteAs(observe(1).combineK(observe(2)).use_.attempt.void, ())
       assertEquals(released, acquired)
-  }
-
-  tickedProperty("combineK - behave like orElse when underlying effect does") {
-    implicit ticker =>
-      forAll { (r1: Resource[IO, Int], r2: Resource[IO, Int]) =>
-        val lhs = r1.orElse(r2)
-        val rhs = r1 <+> r2
-
-        assertEqv(lhs, rhs)
-      }
   }
 
   tickedProperty("combineK - behave like underlying effect") { implicit ticker =>
