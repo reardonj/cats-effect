@@ -1328,6 +1328,41 @@ class IOSuite extends BaseScalaCheckSuite with DisciplineSuite with IOPlatformSu
     assertNonTerminate(test(IO.canceled))
   }
 
+  ticked("cancelation - onCancelRequested backpressures cancelation") { implicit ticker =>
+    val test = for {
+      gate <- IO.deferred[Unit]
+      acked <- IO.ref(false)
+      fiber <- gate.get.onCancelRequested(IO.sleep(10.seconds) *> acked.set(true)).start
+      _ <- IO.sleep(1.second)
+      canceler <- fiber.cancel.start
+      _ <- IO.sleep(1.second)
+      _ <- gate.complete(())
+      _ <- canceler.join
+      result <- acked.get
+    } yield result
+
+    assertCompleteAs(test, true)
+  }
+
+  ticked("cancelation - onCancelRequested acks run before finalizers") { implicit ticker =>
+    val test = for {
+      gate <- IO.deferred[Unit]
+      log <- IO.ref(List.empty[String])
+      fiber <- Resource
+        .onFinalize(log.update("release" :: _))
+        .surround(gate.get.onCancelRequested(IO.sleep(10.seconds) *> log.update("ack" :: _)))
+        .start
+      _ <- IO.sleep(1.second)
+      canceler <- fiber.cancel.start
+      _ <- IO.sleep(1.second)
+      _ <- gate.complete(())
+      _ <- canceler.join
+      result <- log.get
+    } yield result
+
+    assertCompleteAs(test, List("release", "ack"))
+  }
+
   ticked("cancelation - cancelable cancels task") { implicit ticker =>
     def test(fin: IO[Unit]) =
       IO.deferred[Unit].flatMap { latch =>
