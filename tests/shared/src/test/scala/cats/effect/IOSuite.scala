@@ -1328,6 +1328,49 @@ class IOSuite extends BaseScalaCheckSuite with DisciplineSuite with IOPlatformSu
     assertNonTerminate(test(IO.canceled))
   }
 
+  ticked("cancelation - raceOutcome can complete with the loser's canceled outcome") {
+    implicit ticker =>
+      val impossible = new RuntimeException("impossible")
+
+      // the left fiber is slow to cancel, so the right fiber wins the race
+      val race = Spawn[IO].raceOutcome[Unit, Nothing](
+        IO.never[Unit].onCancel(IO.sleep(1.second)),
+        IO.never[Nothing])
+
+      val test = for {
+        fiber <- race.flatMap {
+          case Left(_) => IO.unit
+          case Right(_) => throw impossible
+        }.start
+        _ <- IO.sleep(1.second)
+        _ <- fiber.cancel
+        oc <- fiber.join
+      } yield oc
+
+      assertCompleteAs(test, Outcome.errored[IO, Throwable, Unit](impossible))
+  }
+
+  ticked("cancelation - suspended continuation of a canceled raceOutcome is discarded") {
+    implicit ticker =>
+      val impossible = new RuntimeException("impossible")
+
+      val race = Spawn[IO].raceOutcome[Unit, Nothing](
+        IO.never[Unit].onCancel(IO.sleep(1.second)),
+        IO.never[Nothing])
+
+      val test = for {
+        fiber <- race.flatMap {
+          case Left(_) => IO.unit
+          case Right(_) => IO.raiseError[Unit](impossible)
+        }.start
+        _ <- IO.sleep(1.second)
+        _ <- fiber.cancel
+        oc <- fiber.join
+      } yield oc
+
+      assertCompleteAs(test, Outcome.canceled[IO, Throwable, Unit])
+  }
+
   ticked("cancelation - cancelable cancels task") { implicit ticker =>
     def test(fin: IO[Unit]) =
       IO.deferred[Unit].flatMap { latch =>
